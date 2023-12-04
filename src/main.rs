@@ -1,7 +1,8 @@
 use std::{fs::File, io::BufReader};
+use clap::{Parser, ValueEnum};
+use serde_json::*;
 use z3::{Context, SatResult, Solver};
 use z3::ast::{Ast, Int, Bool};
-use serde_json::*;
 
 #[derive(Debug)]
 struct Sudoku {
@@ -17,22 +18,45 @@ struct Sudoku {
     german_whispers: Vec<Vec<Vec<usize>>>
 }
 
-fn open_sudoku(fp: &str) -> Sudoku {
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum Mode {
+    /// Find a solution of the sudoku
+    Solution,
+
+    /// Find the number of solutions of the sudoku (up to MAX_SUDOKU)
+    Count,
+
+    /// Find the possible answers in each square
+    Hint,
+}
+
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// File path containing JSON of sudoku
+    file_path: String,
+
+    /// What mode to run the solver in
+    #[arg(value_enum)]
+    mode: Mode,
+}
+
+fn open_sudoku(fp: &String) -> Sudoku {
     let file = File::open(fp).unwrap();
     let reader = BufReader::new(file);
     let v: Value = serde_json::from_reader(reader).unwrap();
 
     Sudoku {
-        given: serde_json::from_value::<Vec<Vec<u64>>>(v["given"].clone()).unwrap(),
+        given: serde_json::from_value(v["given"].clone()).unwrap(),
         horizontal_rule: serde_json::from_value(v["1-9horiz"].clone()).unwrap(),
         vertical_rule: serde_json::from_value(v["1-9vert"].clone()).unwrap(),
         nonet_rule: serde_json::from_value(v["1-9nonet"].clone()).unwrap(),
-        offset: serde_json::from_value::<Vec<Vec<i32>>>(v["offsets"].clone()).unwrap(),
-        thermo: serde_json::from_value::<Vec<Vec<Vec<usize>>>>(v["thermo"].clone()).unwrap(),
-        arrow: serde_json::from_value::<Vec<Vec<Vec<usize>>>>(v["arrow"].clone()).unwrap(),
-        kropki_adjacent: serde_json::from_value::<Vec<Vec<Vec<usize>>>>(v["kropkiAdjacent"].clone()).unwrap(),
-        kropki_double: serde_json::from_value::<Vec<Vec<Vec<usize>>>>(v["kropkiDouble"].clone()).unwrap(),
-        german_whispers: serde_json::from_value::<Vec<Vec<Vec<usize>>>>(v["germanWhispers"].clone()).unwrap(),
+        offset: serde_json::from_value(v["offsets"].clone()).unwrap(),
+        thermo: serde_json::from_value(v["thermo"].clone()).unwrap(),
+        arrow: serde_json::from_value(v["arrow"].clone()).unwrap(),
+        kropki_adjacent: serde_json::from_value(v["kropkiAdjacent"].clone()).unwrap(),
+        kropki_double: serde_json::from_value(v["kropkiDouble"].clone()).unwrap(),
+        german_whispers: serde_json::from_value(v["germanWhispers"].clone()).unwrap(),
     }
 }
 
@@ -170,11 +194,13 @@ fn add_kropki_double_constraint(grid: &Vec<Vec<Int<'_>>>, pair: &Vec<Vec<usize>>
 }
 
 fn main() {
+    let args = Args::parse();
+
+    let sudoku = open_sudoku(&args.file_path);
+
     let config = z3::Config::new();
     let ctx = z3::Context::new(&config);
     let solver = Solver::new(&ctx);
-
-    let sudoku = open_sudoku("./sudoku-export.json");
 
     let grid = (0..9).map(|i| (0..9).map(|j| Int::new_const(&ctx, format!("r{i}c{j}"))).collect()).collect::<Vec<Vec<_>>>();
 
