@@ -9,6 +9,7 @@ struct Sudoku {
     horizontal_rule: bool,
     vertical_rule: bool,
     nonet_rule: bool,
+    offset: Vec<Vec<i32>>,
     thermo: Vec<Vec<Vec<usize>>>,
     arrow: Vec<Vec<Vec<usize>>>,
     kropki_adjacent: Vec<Vec<Vec<usize>>>,
@@ -26,6 +27,7 @@ fn open_sudoku(fp: &str) -> Sudoku {
         horizontal_rule: serde_json::from_value(v["1-9horiz"].clone()).unwrap(),
         vertical_rule: serde_json::from_value(v["1-9vert"].clone()).unwrap(),
         nonet_rule: serde_json::from_value(v["1-9nonet"].clone()).unwrap(),
+        offset: serde_json::from_value::<Vec<Vec<i32>>>(v["offsets"].clone()).unwrap(),
         thermo: serde_json::from_value::<Vec<Vec<Vec<usize>>>>(v["thermo"].clone()).unwrap(),
         arrow: serde_json::from_value::<Vec<Vec<Vec<usize>>>>(v["arrow"].clone()).unwrap(),
         kropki_adjacent: serde_json::from_value::<Vec<Vec<Vec<usize>>>>(v["kropkiAdjacent"].clone()).unwrap(),
@@ -104,6 +106,21 @@ fn add_nonet_constraints(grid: &Vec<Vec<Int<'_>>>, solver: &Solver, ctx: &Contex
     }
 }
 
+fn add_offset_constraint(grid: &Vec<Vec<Int<'_>>>, offsets: &Vec<Vec<i32>>, solver: &Solver) {
+    let mut offset_constraints = Vec::new();
+    for i in 0..9 {
+        for j in 0..9 {
+            let squares = offsets.iter().map(|x| ((i as i32) + x[0], (j as i32) + x[1])).filter(|(a, b)| 0 <= *a && *a < 9 && 0 <= *b && *b < 9);
+            for (row, col) in squares {
+                offset_constraints.push(Bool::not(&grid[i][j]._eq(&grid[row as usize][col as usize])));
+            }
+        }
+    }
+    for offset_constraint in offset_constraints {
+        solver.assert(&offset_constraint);
+    }
+}
+
 fn add_increasing_constraint(grid: &Vec<Vec<Int<'_>>>, squares: &Vec<Vec<usize>>, solver: &Solver) {
     let mut increasing_constraints = Vec::new();
     for i in 0..squares.len() - 1 {
@@ -118,25 +135,19 @@ fn add_sum_constraint(grid: &Vec<Vec<Int<'_>>>, summands: &[Vec<usize>], sum: &V
     if summands.len() == 0 {
         panic!("No summands found");
     }
-    let mut sum_constraints = Vec::new();
     let sum_ast = Int::add(ctx, &summands.iter().map(|x| &grid[x[0]][x[1]]).collect::<Vec<_>>()[..]);
-    sum_constraints.push(grid[sum[0]][sum[1]]._eq(&sum_ast));
-    for sum_constraint in sum_constraints {
-        solver.assert(&sum_constraint);
-    }
+    solver.assert(&grid[sum[0]][sum[1]]._eq(&sum_ast));
 }
 
 fn add_exact_diff_constraint(grid: &Vec<Vec<Int<'_>>>, pair: &Vec<Vec<usize>>, diff: u64, solver: &Solver, ctx: &Context) {
-    let fst_pair_ast = pair.iter().map(|x| &grid[x[0]][x[1]]).collect::<Vec<_>>();
-    let fst_diff_ast = Int::sub(ctx, &fst_pair_ast[..]);
-    let snd_pair_ast = pair.iter().rev().map(|x| &grid[x[0]][x[1]]).collect::<Vec<_>>();
-    let snd_diff_ast = Int::sub(ctx, &snd_pair_ast[..]);
+    let fst_diff_ast = Int::sub(ctx, &pair.iter().map(|x| &grid[x[0]][x[1]]).collect::<Vec<_>>());
+    let snd_diff_ast = Int::sub(ctx, &pair.iter().rev().map(|x| &grid[x[0]][x[1]]).collect::<Vec<_>>());
     solver.assert(&Bool::or(ctx, &[&fst_diff_ast._eq(&Int::from_u64(ctx, diff)), &snd_diff_ast._eq(&Int::from_u64(ctx, diff))]));
 }
 
 fn add_at_least_diff_constraint(grid: &Vec<Vec<Int<'_>>>, pair: &[&Vec<usize>; 2], diff: u64, solver: &Solver, ctx: &Context) {
-    let fst_diff_ast = Int::sub(ctx, &pair.iter().map(|x| &grid[x[0]][x[1]]).collect::<Vec<_>>()[..]);
-    let snd_diff_ast = Int::sub(ctx, &pair.iter().rev().map(|x| &grid[x[0]][x[1]]).collect::<Vec<_>>()[..]);
+    let fst_diff_ast = Int::sub(ctx, &pair.iter().map(|x| &grid[x[0]][x[1]]).collect::<Vec<_>>());
+    let snd_diff_ast = Int::sub(ctx, &pair.iter().rev().map(|x| &grid[x[0]][x[1]]).collect::<Vec<_>>());
     solver.assert(&Bool::or(ctx, &[&fst_diff_ast.ge(&Int::from_u64(ctx, diff)), &snd_diff_ast.ge(&Int::from_u64(ctx, diff))]));
 }
 
@@ -178,6 +189,9 @@ fn main() {
     }
     if sudoku.nonet_rule {
         add_nonet_constraints(&grid, &solver, &ctx);
+    }
+    if !sudoku.offset.is_empty() {
+        add_offset_constraint(&grid, &sudoku.offset, &solver);
     }
     for squares in sudoku.thermo {
         add_increasing_constraint(&grid, &squares, &solver);
