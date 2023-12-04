@@ -193,6 +193,41 @@ fn add_kropki_double_constraint(grid: &Vec<Vec<Int<'_>>>, pair: &Vec<Vec<usize>>
     );
 }
 
+fn add_constraints(sudoku: &Sudoku, grid: &Vec<Vec<Int<'_>>>, solver: &Solver, ctx: &Context) {
+    add_number_constraints(grid, solver, ctx);
+    add_given_constraints(sudoku, grid, solver, ctx);
+    if sudoku.horizontal_rule {
+        add_horizontal_constraints(grid, solver, ctx);
+    }
+    if sudoku.vertical_rule {
+        add_vertical_constraints(grid, solver, ctx);
+    }
+    if sudoku.nonet_rule {
+        add_nonet_constraints(grid, solver, ctx);
+    }
+    if !sudoku.offset.is_empty() {
+        add_offset_constraint(grid, &sudoku.offset, solver);
+    }
+    for squares in &sudoku.thermo {
+        add_increasing_constraint(grid, squares, solver);
+    }
+    for squares in &sudoku.arrow {
+        add_sum_constraint(grid, &squares[1..], &squares[0], solver, ctx);
+    }
+    for kropki in &sudoku.kropki_adjacent {
+        add_exact_diff_constraint(grid, kropki, 1, solver, ctx);
+    }
+    for kropki in &sudoku.kropki_double {
+        add_kropki_double_constraint(grid, kropki, solver, ctx);
+    }
+    for whisper in &sudoku.german_whispers {
+        for i in 0..whisper.len() - 1 {
+            let pair = [&whisper[i], &whisper[i + 1]];
+            add_at_least_diff_constraint(grid, &pair, 5, solver, ctx);
+        }
+    }
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -202,58 +237,32 @@ fn main() {
     let ctx = z3::Context::new(&config);
     let solver = Solver::new(&ctx);
 
-    let grid = (0..9).map(|i| (0..9).map(|j| Int::new_const(&ctx, format!("r{i}c{j}"))).collect()).collect::<Vec<Vec<_>>>();
+    let grid = (0..9).map(|i: i32| (0..9).map(|j| Int::new_const(&ctx, format!("r{i}c{j}"))).collect()).collect::<Vec<Vec<_>>>();
 
-    add_number_constraints(&grid, &solver, &ctx);
-    add_given_constraints(&sudoku, &grid, &solver, &ctx);
-
-    if sudoku.horizontal_rule {
-        add_horizontal_constraints(&grid, &solver, &ctx);
-    }
-    if sudoku.vertical_rule {
-        add_vertical_constraints(&grid, &solver, &ctx);
-    }
-    if sudoku.nonet_rule {
-        add_nonet_constraints(&grid, &solver, &ctx);
-    }
-    if !sudoku.offset.is_empty() {
-        add_offset_constraint(&grid, &sudoku.offset, &solver);
-    }
-    for squares in sudoku.thermo {
-        add_increasing_constraint(&grid, &squares, &solver);
-    }
-    for squares in sudoku.arrow {
-        add_sum_constraint(&grid, &squares[1..], &squares[0], &solver, &ctx);
-    }
-    for kropki in sudoku.kropki_adjacent {
-        add_exact_diff_constraint(&grid, &kropki, 1, &solver, &ctx);
-    }
-    for kropki in sudoku.kropki_double {
-        add_kropki_double_constraint(&grid, &kropki, &solver, &ctx);
-    }
-    for whisper in sudoku.german_whispers {
-        for i in 0..whisper.len() - 1 {
-            let pair = [&whisper[i], &whisper[i + 1]];
-            add_at_least_diff_constraint(&grid, &pair, 5, &solver, &ctx);
-        }
-    }
-
-    println!("constraints added");
-    match solver.check() {
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            for i in 0..9 {
-                for j in 0..9 {
-                    print!("{}", model.get_const_interp(&grid[i][j]).unwrap());
+    match args.mode {
+        Mode::Solution => {
+            add_constraints(&sudoku, &grid, &solver, &ctx);
+            println!("Constraints added. Solver is running...");
+            match solver.check() {
+                SatResult::Sat => {
+                    println!("Possible solution found!");
+                    let model = solver.get_model().unwrap();
+                    for i in 0..9 {
+                        for j in 0..9 {
+                            print!("{}", model.get_const_interp(&grid[i][j]).unwrap());
+                        }
+                        println!();
+                    }
+                },
+                SatResult::Unsat => {
+                    println!("Could not find a satisfying Sudoku");
+                },
+                SatResult::Unknown => {
+                    panic!("Solver returned unknown!");
                 }
-                println!();
             }
         },
-        SatResult::Unsat => {
-            println!("Could not find a satisfying Sudoku");
-        },
-        SatResult::Unknown => {
-            panic!("Solver returned unknown!");
-        }
+        Mode::Count => (),
+        Mode::Hint => (),
     }
 }
