@@ -1,7 +1,7 @@
 use std::{fs::File, io::BufReader};
 use clap::{Parser, ValueEnum};
 use serde_json::*;
-use z3::{Context, SatResult, Solver};
+use z3::{Context, SatResult, Solver, Model};
 use z3::ast::{Ast, Int, Bool};
 
 #[derive(Debug)]
@@ -28,6 +28,9 @@ enum Mode {
 
     /// Find the possible answers in each square
     Hint,
+
+    /// Find the possible answers in a single square
+    Square,
 }
 
 #[derive(Parser)]
@@ -39,6 +42,12 @@ struct Args {
     /// What mode to run the solver in
     #[arg(value_enum)]
     mode: Mode,
+
+    /// Use with Square, row of the square to find all possible answers
+    row: Option<usize>,
+
+    /// Use with Square, column of the square to find all possible answers
+    col: Option<usize>,
 }
 
 fn open_sudoku(fp: &String) -> Sudoku {
@@ -228,6 +237,30 @@ fn add_constraints(sudoku: &Sudoku, grid: &Vec<Vec<Int<'_>>>, solver: &Solver, c
     }
 }
 
+fn print_sudoku_from_model(model: &Model, grid: &Vec<Vec<Int<'_>>>) {
+    let mut sudoku = [[0; 9]; 9];
+    for i in 0..9 {
+        for j in 0..9 {
+            sudoku[i][j] =  model.get_const_interp(&grid[i][j]).unwrap().as_u64().unwrap();
+        }
+    }
+    println!("╔═══════╤═══════╤═══════╗");
+    for i in 0..9 {
+        print!("║");
+        for j in 0..3 {
+            print!(" {} {} {} ", sudoku[i][3 * j], sudoku[i][3 * j + 1], sudoku[i][3 * j + 2]);
+            if j != 2 {
+                print!("│");
+            }
+        }
+        println!("║");
+        if i % 3 == 2 && i != 8 {
+            println!("╟───────┼───────┼───────╢")
+        }
+    }
+    println!("╚═══════╧═══════╧═══════╝");
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -241,18 +274,16 @@ fn main() {
 
     match args.mode {
         Mode::Solution => {
+            if args.row.is_some() || args.col.is_some() {
+                println!("Ignoring row and column information in Solution mode.");
+            }
             add_constraints(&sudoku, &grid, &solver, &ctx);
             println!("Constraints added. Solver is running...");
             match solver.check() {
                 SatResult::Sat => {
                     println!("Possible solution found!");
                     let model = solver.get_model().unwrap();
-                    for i in 0..9 {
-                        for j in 0..9 {
-                            print!("{}", model.get_const_interp(&grid[i][j]).unwrap());
-                        }
-                        println!();
-                    }
+                    print_sudoku_from_model(&model, &grid);
                 },
                 SatResult::Unsat => {
                     println!("Could not find a satisfying Sudoku");
@@ -264,5 +295,30 @@ fn main() {
         },
         Mode::Count => (),
         Mode::Hint => (),
+        Mode::Square => {
+            if args.row.is_none() || args.col.is_none() {
+                println!("Please specify the row and column of the square.");
+                return;
+            }
+            let row = args.row.unwrap();
+            let col = args.col.unwrap();
+            if 9 <= row || 9 <= col {
+                println!("Invalid square, {} {}", row, col);
+                return;
+            }
+            add_constraints(&sudoku, &grid, &solver, &ctx);
+            println!("Constraints added. Solver is running...");
+            for i in 1..=9 {
+                print!("Checking {}... ", i);
+                solver.push();
+                solver.assert(&grid[row][col]._eq(&Int::from_u64(&ctx, i)));
+                if solver.check() == SatResult::Sat {
+                    println!("True!");
+                } else {
+                    println!("False!");
+                }
+                solver.pop(1);
+            }
+        }
     }
 }
