@@ -1,8 +1,14 @@
+mod solver;
+mod optimize;
+
 use std::{fs::File, io::BufReader};
 use clap::{Parser, ValueEnum};
 use serde_json::*;
-use z3::{Context, SatResult, Solver, Model};
+use z3::{SatResult, Solver, Model, Optimize};
 use z3::ast::{Ast, Int, Bool};
+
+use crate::solver::add_solver_constraints;
+use crate::optimize::add_optimizer_constraints;
 
 #[derive(Debug)]
 struct Sudoku {
@@ -23,7 +29,7 @@ enum Mode {
     /// Find a solution of the sudoku
     Solution,
 
-    /// Find the number of solutions of the sudoku (up to MAX_SUDOKU)
+    /// Find the number of solutions of the sudoku (up to max_sudoku)
     Count,
 
     /// Find the possible answers in each square
@@ -36,17 +42,24 @@ enum Mode {
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// File path containing JSON of sudoku
+    /// File path containing JSON of Sudoku
+    #[arg(short, long)]
     file_path: String,
 
     /// What mode to run the solver in
-    #[arg(value_enum)]
+    #[arg(long, value_enum)]
     mode: Mode,
 
+    /// Maximum number of Sudokus to search
+    #[arg(long, default_value_t = 1000)]
+    max_sudoku: u32,
+
     /// Use with Square, row of the square to find all possible answers
+    #[arg(short, long)]
     row: Option<usize>,
 
     /// Use with Square, column of the square to find all possible answers
+    #[arg(short, long)]
     col: Option<usize>,
 }
 
@@ -69,173 +82,6 @@ fn open_sudoku(fp: &String) -> Sudoku {
     }
 }
 
-fn add_number_constraints(grid: &Vec<Vec<Int<'_>>>, solver: &Solver, ctx: &Context) {
-    let mut number_constraints = Vec::new();
-    for i in 0..9 {
-        for j in 0..9 {
-            number_constraints.push(grid[i][j].ge(&Int::from_u64(ctx, 1)));
-            number_constraints.push(grid[i][j].le(&Int::from_u64(ctx, 9)));
-        }
-    }
-    for number_constraint in number_constraints {
-        solver.assert(&number_constraint);
-    }
-}
-
-fn add_given_constraints(sudoku: &Sudoku, grid: &Vec<Vec<Int<'_>>>, solver: &Solver, ctx: &Context) {
-    let mut given_constraints = Vec::new();
-    for i in 0..9 {
-        for j in 0..9 {
-            if sudoku.given[i][j] < 1 || sudoku.given[i][j] > 9 {
-                continue;
-            }
-            given_constraints.push(grid[i][j]._eq(&Int::from_u64(ctx, sudoku.given[i][j])));
-        }
-    }
-    for given_constraint in given_constraints {
-        solver.assert(&given_constraint);
-    }
-}
-
-fn add_horizontal_constraints(grid: &Vec<Vec<Int<'_>>>, solver: &Solver, ctx: &Context) {
-    let mut horizontal_constraints = Vec::new();
-    for i in 0..9 {
-        let mut row = Vec::new();
-        for j in 0..9 {
-            row.push(&grid[i][j]);
-        }
-        horizontal_constraints.push(Int::distinct(ctx, &row));
-    }
-    for horizontal_constraint in horizontal_constraints {
-        solver.assert(&horizontal_constraint);
-    }
-}
-
-fn add_vertical_constraints(grid: &Vec<Vec<Int<'_>>>, solver: &Solver, ctx: &Context) {
-    let mut vertical_constraints = Vec::new();
-    for i in 0..9 {
-        let mut col = Vec::new();
-        for j in 0..9 {
-            col.push(&grid[j][i]);
-        }
-        vertical_constraints.push(Int::distinct(ctx, &col));
-    }
-    for vertical_constraint in vertical_constraints {
-        solver.assert(&vertical_constraint);
-    }
-}
-
-fn add_nonet_constraints(grid: &Vec<Vec<Int<'_>>>, solver: &Solver, ctx: &Context) {
-    let mut nonet_constraints = Vec::new();
-    for i in 0..9 {
-        let mut nonet = Vec::new();
-        for j in 0..9 {
-            nonet.push(&grid[((i / 3) * 3) + (j / 3)][((i % 3) * 3) + (j % 3)]);
-        }
-        nonet_constraints.push(Int::distinct(ctx, &nonet));
-    }
-    for nonet_constraint in nonet_constraints {
-        solver.assert(&nonet_constraint);
-    }
-}
-
-fn add_offset_constraint(grid: &Vec<Vec<Int<'_>>>, offsets: &Vec<Vec<i32>>, solver: &Solver) {
-    let mut offset_constraints = Vec::new();
-    for i in 0..9 {
-        for j in 0..9 {
-            let squares = offsets.iter().map(|x| ((i as i32) + x[0], (j as i32) + x[1])).filter(|(a, b)| 0 <= *a && *a < 9 && 0 <= *b && *b < 9);
-            for (row, col) in squares {
-                offset_constraints.push(Bool::not(&grid[i][j]._eq(&grid[row as usize][col as usize])));
-            }
-        }
-    }
-    for offset_constraint in offset_constraints {
-        solver.assert(&offset_constraint);
-    }
-}
-
-fn add_increasing_constraint(grid: &Vec<Vec<Int<'_>>>, squares: &Vec<Vec<usize>>, solver: &Solver) {
-    let mut increasing_constraints = Vec::new();
-    for i in 0..squares.len() - 1 {
-        increasing_constraints.push(grid[squares[i][0]][squares[i][1]].lt(&grid[squares[i+1][0]][squares[i+1][1]]));
-    }
-    for increasing_constraint in increasing_constraints {
-        solver.assert(&increasing_constraint);
-    }
-}
-
-fn add_sum_constraint(grid: &Vec<Vec<Int<'_>>>, summands: &[Vec<usize>], sum: &Vec<usize>, solver: &Solver, ctx: &Context) {
-    if summands.len() == 0 {
-        panic!("No summands found");
-    }
-    let sum_ast = Int::add(ctx, &summands.iter().map(|x| &grid[x[0]][x[1]]).collect::<Vec<_>>()[..]);
-    solver.assert(&grid[sum[0]][sum[1]]._eq(&sum_ast));
-}
-
-fn add_exact_diff_constraint(grid: &Vec<Vec<Int<'_>>>, pair: &Vec<Vec<usize>>, diff: u64, solver: &Solver, ctx: &Context) {
-    let fst_diff_ast = Int::sub(ctx, &pair.iter().map(|x| &grid[x[0]][x[1]]).collect::<Vec<_>>());
-    let snd_diff_ast = Int::sub(ctx, &pair.iter().rev().map(|x| &grid[x[0]][x[1]]).collect::<Vec<_>>());
-    solver.assert(&Bool::or(ctx, &[&fst_diff_ast._eq(&Int::from_u64(ctx, diff)), &snd_diff_ast._eq(&Int::from_u64(ctx, diff))]));
-}
-
-fn add_at_least_diff_constraint(grid: &Vec<Vec<Int<'_>>>, pair: &[&Vec<usize>; 2], diff: u64, solver: &Solver, ctx: &Context) {
-    let fst_diff_ast = Int::sub(ctx, &pair.iter().map(|x| &grid[x[0]][x[1]]).collect::<Vec<_>>());
-    let snd_diff_ast = Int::sub(ctx, &pair.iter().rev().map(|x| &grid[x[0]][x[1]]).collect::<Vec<_>>());
-    solver.assert(&Bool::or(ctx, &[&fst_diff_ast.ge(&Int::from_u64(ctx, diff)), &snd_diff_ast.ge(&Int::from_u64(ctx, diff))]));
-}
-
-fn add_kropki_double_constraint(grid: &Vec<Vec<Int<'_>>>, pair: &Vec<Vec<usize>>, solver: &Solver, ctx: &Context) {
-    let asts = &pair.iter().map(|x| &grid[x[0]][x[1]]).collect::<Vec<_>>()[..];
-    solver.assert(
-        &Bool::or(ctx,
-            &[
-                &Bool::and(ctx, &[&asts[0]._eq(&Int::from_u64(ctx, 1)), &asts[1]._eq(&Int::from_u64(ctx, 2))]),
-                &Bool::and(ctx, &[&asts[0]._eq(&Int::from_u64(ctx, 2)), &asts[1]._eq(&Int::from_u64(ctx, 1))]),
-                &Bool::and(ctx, &[&asts[0]._eq(&Int::from_u64(ctx, 2)), &asts[1]._eq(&Int::from_u64(ctx, 4))]),
-                &Bool::and(ctx, &[&asts[0]._eq(&Int::from_u64(ctx, 3)), &asts[1]._eq(&Int::from_u64(ctx, 6))]),
-                &Bool::and(ctx, &[&asts[0]._eq(&Int::from_u64(ctx, 4)), &asts[1]._eq(&Int::from_u64(ctx, 2))]),
-                &Bool::and(ctx, &[&asts[0]._eq(&Int::from_u64(ctx, 4)), &asts[1]._eq(&Int::from_u64(ctx, 8))]),
-                &Bool::and(ctx, &[&asts[0]._eq(&Int::from_u64(ctx, 6)), &asts[1]._eq(&Int::from_u64(ctx, 3))]),
-                &Bool::and(ctx, &[&asts[0]._eq(&Int::from_u64(ctx, 8)), &asts[1]._eq(&Int::from_u64(ctx, 4))]),
-            ]
-        )
-    );
-}
-
-fn add_constraints(sudoku: &Sudoku, grid: &Vec<Vec<Int<'_>>>, solver: &Solver, ctx: &Context) {
-    add_number_constraints(grid, solver, ctx);
-    add_given_constraints(sudoku, grid, solver, ctx);
-    if sudoku.horizontal_rule {
-        add_horizontal_constraints(grid, solver, ctx);
-    }
-    if sudoku.vertical_rule {
-        add_vertical_constraints(grid, solver, ctx);
-    }
-    if sudoku.nonet_rule {
-        add_nonet_constraints(grid, solver, ctx);
-    }
-    if !sudoku.offset.is_empty() {
-        add_offset_constraint(grid, &sudoku.offset, solver);
-    }
-    for squares in &sudoku.thermo {
-        add_increasing_constraint(grid, squares, solver);
-    }
-    for squares in &sudoku.arrow {
-        add_sum_constraint(grid, &squares[1..], &squares[0], solver, ctx);
-    }
-    for kropki in &sudoku.kropki_adjacent {
-        add_exact_diff_constraint(grid, kropki, 1, solver, ctx);
-    }
-    for kropki in &sudoku.kropki_double {
-        add_kropki_double_constraint(grid, kropki, solver, ctx);
-    }
-    for whisper in &sudoku.german_whispers {
-        for i in 0..whisper.len() - 1 {
-            let pair = [&whisper[i], &whisper[i + 1]];
-            add_at_least_diff_constraint(grid, &pair, 5, solver, ctx);
-        }
-    }
-}
 
 fn print_sudoku_from_model(model: &Model, grid: &Vec<Vec<Int<'_>>>) {
     let mut sudoku = [[0; 9]; 9];
@@ -268,7 +114,6 @@ fn main() {
 
     let config = z3::Config::new();
     let ctx = z3::Context::new(&config);
-    let solver = Solver::new(&ctx);
 
     let grid = (0..9).map(|i: i32| (0..9).map(|j| Int::new_const(&ctx, format!("r{i}c{j}"))).collect()).collect::<Vec<Vec<_>>>();
 
@@ -277,7 +122,8 @@ fn main() {
             if args.row.is_some() || args.col.is_some() {
                 println!("Ignoring row and column information in Solution mode.");
             }
-            add_constraints(&sudoku, &grid, &solver, &ctx);
+            let solver = Solver::new(&ctx);
+            add_solver_constraints(&sudoku, &grid, &solver, &ctx);
             println!("Constraints added. Solver is running...");
             match solver.check() {
                 SatResult::Sat => {
@@ -286,15 +132,121 @@ fn main() {
                     print_sudoku_from_model(&model, &grid);
                 },
                 SatResult::Unsat => {
-                    println!("Could not find a satisfying Sudoku");
+                    println!("Could not find a satisfying Sudoku.");
                 },
                 SatResult::Unknown => {
                     panic!("Solver returned unknown!");
                 }
             }
         },
-        Mode::Count => (),
-        Mode::Hint => (),
+        Mode::Count => {
+            if args.row.is_some() || args.col.is_some() {
+                println!("Ignoring row and column information in Solution mode.");
+            }
+            let solver = Solver::new(&ctx);
+            add_solver_constraints(&sudoku, &grid, &solver, &ctx);
+            println!("Constraints added. Counting solutions...");
+            for num in 0..args.max_sudoku {
+                match solver.check() {
+                    SatResult::Sat => {
+                        let model = solver.get_model().unwrap();
+                        print_sudoku_from_model(&model, &grid);
+                        let mut filled_sudoku = [[0; 9]; 9];
+                        for i in 0..9 {
+                            for j in 0..9 {
+                                filled_sudoku[i][j] = model.get_const_interp(&grid[i][j]).unwrap().as_u64().unwrap();
+                            }
+                        }
+                        let a = grid.iter().enumerate().flat_map(
+                            |(i, x)| x.iter().enumerate().map(
+                                |(j, y)| Bool::not(&y._eq(&Int::from_u64(&ctx, filled_sudoku[i][j])))
+                            ).collect::<Vec<_>>()
+                        ).collect::<Vec<_>>();
+                        solver.assert(&Bool::or(&ctx, &a.iter().map(|x| x).collect::<Vec<_>>()[..]));
+                    }
+                    SatResult::Unsat => {
+                        println!("Found {num} possible sudokus!");
+                        return;
+                    }
+                    SatResult::Unknown => {
+                        println!("Unknown reached? Stopping...");
+                        return;
+                    }
+                }
+            }
+            println!("Found >{} possible sudokus!", args.max_sudoku);
+        },
+        Mode::Hint => {
+            if args.row.is_some() || args.col.is_some() {
+                println!("Ignoring row and column information in Solution mode.");
+            }
+            let optimizer = Optimize::new(&ctx);
+            add_optimizer_constraints(&sudoku, &grid, &optimizer, &ctx);
+            let mut clues = [[[false; 9]; 9]; 9];
+            println!("Constraints added. Finding all possible values of every square...");
+            for num in 1..=args.max_sudoku {
+                match optimizer.check(&[]) {
+                    SatResult::Sat => {
+                        let model = optimizer.get_model().unwrap();
+                        // check if new information is learned
+                        let mut answer = [[0; 9]; 9];
+                        let mut new_info = 0;
+                        for i in 0..9 {
+                            for j in 0..9 {
+                                answer[i][j] = model.get_const_interp(&grid[i][j]).unwrap().as_u64().unwrap();
+                                if !clues[i][j][(answer[i][j] - 1) as usize] {
+                                    new_info += 1;
+                                    clues[i][j][(answer[i][j] - 1) as usize] = true;
+                                }
+                            }
+                        }
+                        println!("Iteration {num}: Found {new_info} new clues");
+                        if new_info == 0 {
+                            // printing hints of Sudoku
+                            for i in 0..9 {
+                                for j in 0..9 {
+                                    print!("Row {i} Column {j}: ");
+                                    for k in 0..9 {
+                                        if clues[i][j][k] {
+                                            print!("{} ", k + 1);
+                                        }
+                                    }
+                                    println!();
+                                }
+                            }
+                            return;
+                        }
+                        for i in 0..9 {
+                            for j in 0..9 {
+                                optimizer.assert_soft(&Bool::not(&grid[i][j]._eq(&Int::from_u64(&ctx, answer[i][j]))), 1, None);
+                            }
+                        }
+
+                    }
+                    SatResult::Unsat => {
+                        println!("Could not find a satisfying sudoku.");
+                        return;
+                    }
+                    SatResult::Unknown => {
+                        println!("Unknown reached? Stopping...");
+                        return;
+                    }
+                }
+            }
+            println!("Reached maximum iterations ({}). Try adding more constraints or increase max_sudoku.", args.max_sudoku);
+            println!("Known hints found so far:");
+            for i in 0..9 {
+                for j in 0..9 {
+                    print!("Row {i} Column {j}: ");
+                    for k in 0..9 {
+                        if clues[i][j][k] {
+                            print!("{} ", k + 1);
+                        }
+                    }
+                    println!();
+                }
+            }
+        },
         Mode::Square => {
             if args.row.is_none() || args.col.is_none() {
                 println!("Please specify the row and column of the square.");
@@ -306,16 +258,17 @@ fn main() {
                 println!("Invalid square, {} {}", row, col);
                 return;
             }
-            add_constraints(&sudoku, &grid, &solver, &ctx);
-            println!("Constraints added. Solver is running...");
+            let solver = Solver::new(&ctx);
+            add_solver_constraints(&sudoku, &grid, &solver, &ctx);
+            println!("Constraints added. Finding possible values...");
             for i in 1..=9 {
-                print!("Checking {}... ", i);
+                println!("Checking {}...", i);
                 solver.push();
                 solver.assert(&grid[row][col]._eq(&Int::from_u64(&ctx, i)));
-                if solver.check() == SatResult::Sat {
-                    println!("True!");
-                } else {
-                    println!("False!");
+                match solver.check() {
+                    SatResult::Sat => println!("True!"),
+                    SatResult::Unsat => println!("False!"),
+                    SatResult::Unknown => println!("Unknown!"),
                 }
                 solver.pop(1);
             }
