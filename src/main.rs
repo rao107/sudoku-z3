@@ -82,7 +82,6 @@ fn open_sudoku(fp: &String) -> Sudoku {
     }
 }
 
-
 fn print_sudoku_from_model(model: &Model, grid: &Vec<Vec<Int<'_>>>) {
     let mut sudoku = [[0; 9]; 9];
     for i in 0..9 {
@@ -150,7 +149,6 @@ fn main() {
                 match solver.check() {
                     SatResult::Sat => {
                         let model = solver.get_model().unwrap();
-                        print_sudoku_from_model(&model, &grid);
                         let mut filled_sudoku = [[0; 9]; 9];
                         for i in 0..9 {
                             for j in 0..9 {
@@ -188,7 +186,6 @@ fn main() {
                 match optimizer.check(&[]) {
                     SatResult::Sat => {
                         let model = optimizer.get_model().unwrap();
-                        // check if new information is learned
                         let mut answer = [[0; 9]; 9];
                         let mut new_info = 0;
                         for i in 0..9 {
@@ -202,7 +199,6 @@ fn main() {
                         }
                         println!("Iteration {num}: Found {new_info} new clues");
                         if new_info == 0 {
-                            // printing hints of Sudoku
                             for i in 0..9 {
                                 for j in 0..9 {
                                     print!("Row {i} Column {j}: ");
@@ -221,7 +217,6 @@ fn main() {
                                 optimizer.assert_soft(&Bool::not(&grid[i][j]._eq(&Int::from_u64(&ctx, answer[i][j]))), 1, None);
                             }
                         }
-
                     }
                     SatResult::Unsat => {
                         println!("Could not find a satisfying sudoku.");
