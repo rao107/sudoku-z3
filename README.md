@@ -11,9 +11,9 @@ Supports the following variants:
 * Arrow
 * Kropki
 * German Whispers
-* Anti-knight
-  - Add `"offsets": [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]]`
 * Anti-king
+  - Add `"offsets": [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]]`
+* Anti-knight
   - Add `"offsets": [[-2, -1], [-2, 1], [-1, -2], [-1, 2], [1, -2], [1, 2], [2, -1], [2, 1]]`
 
 Can also disable normal sudoku rules (distinct numbers in every row, column, and nonet).
